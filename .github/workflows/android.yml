@@ -5,12 +5,18 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Kodlari indir
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Flutter kur
         uses: subosito/flutter-action@v2
@@ -30,6 +36,7 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: Android projesini ekle
+          file_pattern: android/** .gitignore .metadata analysis_options.yaml pubspec.lock test/**
 
       - name: APK kaydet
         uses: actions/upload-artifact@v4
