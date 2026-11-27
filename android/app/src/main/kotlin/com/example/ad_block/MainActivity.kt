@@ -1,9 +1,9 @@
 
 package com.example.ad_block
 
+import android.app.Activity
 import android.content.Intent
 import android.net.VpnService
-import android.app.Activity
 import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -12,6 +12,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "ad_block/vpn"
+    private val VPN_REQUEST_CODE = 100
     private var pendingResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -21,20 +22,27 @@ class MainActivity : FlutterActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             CHANNEL
         ).setMethodCallHandler { call, result ->
+
             when (call.method) {
                 "startVpn" -> {
                     val permissionIntent = VpnService.prepare(this)
 
                     if (permissionIntent != null) {
                         pendingResult = result
-                        startActivityForResult(permissionIntent, 100)
+                        startActivityForResult(
+                            permissionIntent,
+                            VPN_REQUEST_CODE
+                        )
                     } else {
                         startVpnService(result)
                     }
                 }
 
                 "stopVpn" -> {
-                    val intent = Intent(this, AdBlockVpnService::class.java)
+                    val intent = Intent(
+                        this,
+                        AdBlockVpnService::class.java
+                    )
                     intent.action = "STOP"
                     startService(intent)
                     result.success(true)
@@ -46,7 +54,10 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun startVpnService(result: MethodChannel.Result) {
-        val intent = Intent(this, AdBlockVpnService::class.java)
+        val intent = Intent(
+            this,
+            AdBlockVpnService::class.java
+        )
         intent.action = "START"
 
         try {
@@ -55,6 +66,7 @@ class MainActivity : FlutterActivity() {
             } else {
                 startService(intent)
             }
+
             result.success(true)
         } catch (e: Exception) {
             result.success(false)
@@ -69,7 +81,7 @@ class MainActivity : FlutterActivity() {
     ) {
         super.onActivityResult(requestCode, resultCode, data)
 
-        if (requestCode == 100) {
+        if (requestCode == VPN_REQUEST_CODE) {
             val result = pendingResult
             pendingResult = null
 
