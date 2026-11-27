@@ -1,29 +1,43 @@
 
 package com.example.ad_block
 
-class DnsBlocker {
+object DnsPacket {
 
-    private val blockedDomains = setOf(
-        "doubleclick.net",
-        "googlesyndication.com",
-        "googleadservices.com",
-        "adservice.google.com",
-        "adnxs.com",
-        "popads.net",
-        "popcash.net",
-        " تبلیغات.ir"
-    )
+    fun getDomain(data: ByteArray): String? {
+        if (data.size < 17) return null
 
-    fun shouldBlock(host: String): Boolean {
-        val domain = host
-            .lowercase()
-            .trim()
-            .trimEnd('.')
+        var pos = 12
+        val parts = mutableListOf<String>()
 
-        if (domain.isEmpty()) return false
+        while (pos < data.size) {
+            val length = data[pos].toInt() and 0xff
+            pos++
 
-        return blockedDomains.any { blocked ->
-            domain == blocked || domain.endsWith(".$blocked")
+            if (length == 0) break
+            if (length > 63 || pos + length > data.size) return null
+
+            parts.add(
+                String(data, pos, length, Charsets.US_ASCII)
+            )
+            pos += length
         }
+
+        if (parts.isEmpty()) return null
+
+        return parts.joinToString(".").lowercase()
+    }
+
+    fun blockedResponse(query: ByteArray): ByteArray {
+        if (query.size < 12) return byteArrayOf()
+
+        val response = query.copyOf()
+        response[2] = 0x81.toByte()
+        response[3] = 0x83.toByte()
+
+        for (i in 6..11) {
+            response[i] = 0
+        }
+
+        return response
     }
 }
