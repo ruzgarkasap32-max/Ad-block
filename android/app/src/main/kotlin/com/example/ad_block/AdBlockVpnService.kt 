@@ -8,34 +8,36 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.content.pm.ServiceInfo
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
+import java.net.URL
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.net.ssl.HttpsURLConnection
 
 class AdBlockVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var worker: Thread? = null
+
     private val running = AtomicBoolean(false)
     private val blocker = DnsBlocker()
+    private val executor = Executors.newFixedThreadPool(4)
+    private val outputLock = Any()
 
     override fun onStartCommand(
         intent: Intent?,
         flags: Int,
         startId: Int
     ): Int {
-        if (intent?.action == "STOP") {
-            stopVpn()
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        when (intent?.action) {
+            "STOP" -> {
+                stopVpn()
+                stopSelf()
+            }
 
-        if (running.compareAndSet(false, true)) {
-            startForeground(1, createNotification())
-            startVpn()
+            "START" -> startVpn()
         }
 
         return START_NOT_STICKY
@@ -71,126 +73,169 @@ class AdBlockVpnService : VpnService() {
     }
 
     private fun startVpn() {
+        if (running.get()) return
+
         try {
-            vpnInterface = Builder()
+            val notification = createNotification()
+
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(
+                    1,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(1, notification)
+            }
+
+            val builder = Builder()
                 .setSession("AD BLOCK")
                 .setMtu(1500)
-                .addAddress("10.10.10.2", 32)
-                .addDnsServer("10.10.10.1")
-                .addRoute("10.10.10.1", 32)
-                .establish()
+                .addAddress("10.0.0.2", 32)
+                .addDnsServer("1.1.1.1")
+                .addRoute("1.1.1.1", 32)
+                .addDisallowedApplication(packageName)
 
-            val descriptor = vpnInterface
+            vpnInterface = builder.establish()
 
-            if (descriptor == null) {
-                running.set(false)
+            if (vpnInterface == null) {
+                stopForeground(true)
                 stopSelf()
                 return
             }
 
+            running.set(true)
+
             worker = Thread {
-                processPackets(descriptor)
-            }.also {
-                it.start()
-            }
+                readPackets()
+            }.also { it.start() }
 
         } catch (e: Exception) {
             running.set(false)
+            stopForeground(true)
             stopSelf()
         }
     }
 
-    private fun processPackets(
-        descriptor: ParcelFileDescriptor
-    ) {
-        val input = FileInputStream(descriptor.fileDescriptor)
-        val output = FileOutputStream(descriptor.fileDescriptor)
-        val buffer = ByteArray(32767)
+    private fun readPackets() {
+        val descriptor = vpnInterface ?: return
 
-        while (running.get()) {
-            try {
+        try {
+            val input = FileInputStream(descriptor.fileDescriptor)
+            val output = FileOutputStream(descriptor.fileDescriptor)
+            val buffer = ByteArray(32767)
+
+            while (running.get()) {
                 val length = input.read(buffer)
+
                 if (length <= 0) continue
 
                 val packet = buffer.copyOf(length)
-                val response = processPacket(packet) ?: continue
 
-                output.write(response)
-
-            } catch (e: Exception) {
-                if (running.get()) {
-                    running.set(false)
-                    stopSelf()
+                executor.execute {
+                    processPacket(packet, output)
                 }
+            }
+
+        } catch (e: Exception) {
+            if (running.get()) {
+                running.set(false)
+                stopSelf()
             }
         }
     }
 
-    private fun processPacket(packet: ByteArray): ByteArray? {
-        if (packet.size < 28) return null
+    private fun processPacket(
+        packet: ByteArray,
+        output: FileOutputStream
+    ) {
+        try {
+            if (packet.size < 28) return
 
-        val version = (packet[0].toInt() ushr 4) and 15
-        if (version != 4) return null
+            val version = (packet[0].toInt() ushr 4) and 15
+            if (version != 4) return
 
-        if ((packet[9].toInt() and 255) != 17) return null
+            if ((packet[9].toInt() and 255) != 17) return
 
-        val ipLength = (packet[0].toInt() and 15) * 4
-        if (ipLength < 20 || packet.size < ipLength + 8) return null
+            val ipLength = (packet[0].toInt() and 15) * 4
+            if (ipLength < 20 || packet.size < ipLength + 8) return
 
-        val udp = ipLength
+            val udp = ipLength
 
-        val destinationPort =
-            ((packet[udp + 2].toInt() and 255) shl 8) or
-            (packet[udp + 3].toInt() and 255)
+            val destinationPort =
+                ((packet[udp + 2].toInt() and 255) shl 8) or
+                (packet[udp + 3].toInt() and 255)
 
-        if (destinationPort != 53) return null
+            if (destinationPort != 53) return
 
-        val dnsStart = udp + 8
-        val dnsQuery = packet.copyOfRange(dnsStart, packet.size)
-
-        val host = DnsPacket.getDomain(dnsQuery) ?: return null
-
-        val dnsResponse = if (blocker.shouldBlock(host)) {
-            DnsPacket.blockedResponse(dnsQuery)
-        } else {
-            forwardDns(dnsQuery) ?: return null
-        }
-
-        return buildResponsePacket(packet, ipLength, dnsResponse)
-    }
-
-    private fun forwardDns(query: ByteArray): ByteArray? {
-        var socket: DatagramSocket? = null
-
-        return try {
-            socket = DatagramSocket()
-
-            if (!protect(socket)) return null
-
-            socket.soTimeout = 4000
-
-            val server = InetAddress.getByName("1.1.1.1")
-
-            socket.send(
-                DatagramPacket(
-                    query,
-                    query.size,
-                    server,
-                    53
-                )
+            val dnsQuery = packet.copyOfRange(
+                udp + 8,
+                packet.size
             )
 
-            val buffer = ByteArray(4096)
-            val response = DatagramPacket(buffer, buffer.size)
+            val domain = DnsPacket.getDomain(dnsQuery) ?: return
 
-            socket.receive(response)
+            val dnsResponse = if (blocker.shouldBlock(domain)) {
+                DnsPacket.blockedResponse(dnsQuery)
+            } else {
+                resolveDns(dnsQuery) ?: return
+            }
 
-            buffer.copyOf(response.length)
+            val responsePacket = buildResponsePacket(
+                packet,
+                ipLength,
+                dnsResponse
+            )
 
-        } catch (e: Exception) {
+            synchronized(outputLock) {
+                if (running.get()) {
+                    output.write(responsePacket)
+                }
+            }
+
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun resolveDns(query: ByteArray): ByteArray? {
+        var connection: HttpsURLConnection? = null
+
+        return try {
+            connection = URL(
+                "https://cloudflare-dns.com/dns-query"
+            ).openConnection() as HttpsURLConnection
+
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
+            connection.doOutput = true
+
+            connection.setRequestProperty(
+                "Content-Type",
+                "application/dns-message"
+            )
+
+            connection.setRequestProperty(
+                "Accept",
+                "application/dns-message"
+            )
+
+            connection.outputStream.use {
+                it.write(query)
+            }
+
+            if (connection.responseCode == 200) {
+                connection.inputStream.use {
+                    it.readBytes()
+                }
+            } else {
+                null
+            }
+
+        } catch (_: Exception) {
             null
         } finally {
-            socket?.close()
+            connection?.disconnect()
         }
     }
 
@@ -204,13 +249,14 @@ class AdBlockVpnService : VpnService() {
 
         System.arraycopy(request, 0, result, 0, ipLength)
 
-        for (i in 0 until 4) {
+        for (i in 0..3) {
             result[12 + i] = request[16 + i]
             result[16 + i] = request[12 + i]
         }
 
         result[2] = (result.size shr 8).toByte()
         result[3] = result.size.toByte()
+
         result[10] = 0
         result[11] = 0
 
@@ -226,7 +272,13 @@ class AdBlockVpnService : VpnService() {
         result[udp + 6] = 0
         result[udp + 7] = 0
 
-        System.arraycopy(dns, 0, result, udp + 8, dns.size)
+        System.arraycopy(
+            dns,
+            0,
+            result,
+            udp + 8,
+            dns.size
+        )
 
         var sum = 0L
         var i = 0
@@ -259,7 +311,15 @@ class AdBlockVpnService : VpnService() {
         }
 
         vpnInterface = null
-        stopForeground(STOP_FOREGROUND_REMOVE)
+
+        executor.shutdownNow()
+
+        if (Build.VERSION.SDK_INT >= 24) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
     }
 
     override fun onDestroy() {
