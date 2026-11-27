@@ -10,6 +10,8 @@ class VpnService {
       return result ?? false;
     } on PlatformException {
       return false;
+    } on MissingPluginException {
+      return false;
     }
   }
 
@@ -18,6 +20,8 @@ class VpnService {
       final result = await _channel.invokeMethod<bool>('stopVpn');
       return result ?? false;
     } on PlatformException {
+      return false;
+    } on MissingPluginException {
       return false;
     }
   }
