@@ -1,4 +1,6 @@
+
 import 'package:flutter/material.dart';
+import 'vpn_service.dart';
 
 void main() {
   runApp(const AdBlockApp());
@@ -27,6 +29,32 @@ class AnaSayfa extends StatefulWidget {
 
 class _AnaSayfaState extends State<AnaSayfa> {
   bool koruma = false;
+  bool yukleniyor = false;
+
+  Future<void> korumayiDegistir() async {
+    if (yukleniyor) return;
+
+    setState(() => yukleniyor = true);
+
+    final sonuc = koruma
+        ? await VpnService.stopVpn()
+        : await VpnService.startVpn();
+
+    if (!mounted) return;
+
+    setState(() {
+      if (sonuc) koruma = !koruma;
+      yukleniyor = false;
+    });
+
+    if (!sonuc) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Koruma başlatılamadı. Tekrar deneyin.'),
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -41,9 +69,9 @@ class _AnaSayfaState extends State<AnaSayfa> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(
+            Icon(
               Icons.shield,
-              color: Colors.blue,
+              color: koruma ? Colors.greenAccent : Colors.blue,
               size: 110,
             ),
             const SizedBox(height: 25),
@@ -56,13 +84,13 @@ class _AnaSayfaState extends State<AnaSayfa> {
             ),
             const SizedBox(height: 30),
             ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  koruma = !koruma;
-                });
-              },
+              onPressed: yukleniyor ? null : korumayiDegistir,
               child: Text(
-                koruma ? 'KORUMAYI DURDUR' : 'KORUMAYI BAŞLAT',
+                yukleniyor
+                    ? 'BEKLEYİN...'
+                    : koruma
+                        ? 'KORUMAYI DURDUR'
+                        : 'KORUMAYI BAŞLAT',
               ),
             ),
             const SizedBox(height: 25),
