@@ -1,3 +1,4 @@
+
 package com.example.ad_block
 
 import android.content.Intent
@@ -9,6 +10,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "ad_block/vpn"
+    private var pendingResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -23,19 +25,36 @@ class MainActivity : FlutterActivity() {
                     val intent = VpnService.prepare(this)
 
                     if (intent != null) {
+                        pendingResult = result
                         startActivityForResult(intent, 100)
-                        result.success(false)
                     } else {
                         result.success(false)
                     }
                 }
 
                 "stopVpn" -> {
-                    result.success(false)
+                    val serviceIntent = Intent(this, AdBlockVpnService::class.java)
+                    serviceIntent.action = "STOP"
+                    startService(serviceIntent)
+                    result.success(true)
                 }
 
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    @Deprecated("Deprecated in Android")
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode == 100) {
+            pendingResult?.success(false)
+            pendingResult = null
         }
     }
 }
